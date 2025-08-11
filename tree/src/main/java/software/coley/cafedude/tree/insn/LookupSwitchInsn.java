@@ -15,6 +15,7 @@ import java.util.List;
 public class LookupSwitchInsn extends Insn {
 	private int padding;
 	private List<Integer> keys;
+
 	private List<Label> labels;
 	private Label defaultLabel;
 

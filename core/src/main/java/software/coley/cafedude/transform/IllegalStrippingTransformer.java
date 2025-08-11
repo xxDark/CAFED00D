@@ -56,7 +56,6 @@ import software.coley.cafedude.classfile.constant.CpClass;
 import software.coley.cafedude.classfile.constant.CpEntry;
 import software.coley.cafedude.classfile.constant.CpUtf8;
 import software.coley.cafedude.classfile.constant.LoadableConstant;
-import software.coley.cafedude.classfile.constant.Placeholders;
 import software.coley.cafedude.classfile.instruction.BasicInstruction;
 import software.coley.cafedude.classfile.instruction.CpRefInstruction;
 import software.coley.cafedude.classfile.instruction.Instruction;
@@ -64,9 +63,6 @@ import software.coley.cafedude.classfile.instruction.IntOperandInstruction;
 import software.coley.cafedude.classfile.instruction.LookupSwitchInstruction;
 import software.coley.cafedude.classfile.instruction.TableSwitchInstruction;
 import software.coley.cafedude.io.AttributeHolderType;
-import software.coley.cafedude.io.IndexableByteStream;
-import software.coley.cafedude.io.InstructionReader;
-import software.coley.cafedude.io.InstructionWriter;
 
 import java.util.ArrayDeque;
 import java.util.Collection;
@@ -129,7 +125,7 @@ public class IllegalStrippingTransformer extends Transformer implements Constant
 			if (code != null) {
 				removeInvalidInstructions(code);
 				removeInvalidVariables(code);
-				//removeInstructionReinterpretation(code, 0);
+				removeInstructionReinterpretation(code);
 				//removeDeadInstructions(code);
 				collectDynamicCpReferences(code, dynamicCpReferences);
 			}
@@ -216,170 +212,9 @@ public class IllegalStrippingTransformer extends Transformer implements Constant
 	 *
 	 * @param code
 	 * 		Code to visit.
-	 * @param passCount
-	 * 		Current visit pass count.
 	 */
-	protected void removeInstructionReinterpretation(@Nonnull CodeAttribute code, int passCount) {
-		List<Instruction> instructions = code.getInstructions();
-		int instructionCount = instructions.size();
-		for (int i = 0; i < instructionCount; i++) {
-			Instruction instruction = instructions.get(i);
-			if (isBranch(instruction) && instruction instanceof IntOperandInstruction jump) {
-				// Compute jump destination
-				int currentOffset = code.computeOffsetOf(instruction);
-				int relativeJumpOffset = jump.getOperand();
-				int absoluteJumpOffset = currentOffset + relativeJumpOffset;
-				Instruction instructionAtOffset = code.getInstructionAtOffset(absoluteJumpOffset);
-
-				// If no such instruction starts at the given offset, we've jumped into the middle of an instruction
-				// and this is illegally re-interpreting the operand bytes as its own instruction.
-				if (instructionAtOffset == null) {
-					// Get the instruction we've jumped into
-					instructionAtOffset = code.getContainingInstructionAtOffset(absoluteJumpOffset);
-					if (instructionAtOffset == null) {
-						logger.warn("Reinterpretation lookup went out-of-bounds");
-						return;
-					}
-
-					// Compute how many bytes into the instruction we've jumped into
-					int offsetOfContainingInstruction = code.computeOffsetOf(instructionAtOffset);
-					int offsetDifference = absoluteJumpOffset - offsetOfContainingInstruction;
-
-					// Reinterpret the bytecode with our illegal offset
-					byte[] methodBytecode = new InstructionWriter().writeCode(instructions);
-					int methodBytecodeOffset = offsetOfContainingInstruction + offsetDifference;
-					List<Instruction> reinrerpreted = Collections.emptyList();
-					try {
-						// Continue expanding the reinterpreted block until:
-						// - We encounter a failure with reinterpretation
-						// - Hit the end of the method
-						// - Hit code that aligns with our existing instruction model
-						int next = i + 1;
-						int tempSequenceLength = instructionAtOffset.computeSize();
-						int tempInsnIndexToCheckForAlignment = 1;
-						while (next <= instructionCount) {
-							IndexableByteStream is = new IndexableByteStream(methodBytecode);
-							is.moveTo(methodBytecodeOffset);
-							reinrerpreted = new InstructionReader().read(is, pool, tempSequenceLength - offsetDifference);
-
-							// If we observe that we hit the end of the method, this block is complete.
-							if (next >= instructionCount) break;
-
-							// Step forward and try again.
-							tempSequenceLength += instructions.get(next++).computeSize();
-
-							// If we observe that we hit code that aligns with the normal interpretation then this block is complete.
-							CodeAttribute tmpCode = new CodeAttribute(Placeholders.UTF8, 0, 0, reinrerpreted, Collections.emptyList(), Collections.emptyList());
-							for (int j = tempInsnIndexToCheckForAlignment; j < reinrerpreted.size(); j++) {
-								// Get the offset of this reinterpreted instruction in terms of the original method bytecode
-								Instruction reinterpretedInsn = reinrerpreted.get(j);
-								int tmpOffset = tmpCode.computeOffsetOf(reinterpretedInsn);
-								int offsetInOriginalMethod = tmpOffset + offsetOfContainingInstruction + offsetDifference;
-
-								// If the offset of this instruction is a match for an offset in the original code
-								// then we've completed the block of reinterpreted instructions.
-								if (code.getInstructionAtOffset(offsetInOriginalMethod) != null) {
-									if (j < reinrerpreted.size())
-										reinrerpreted = reinrerpreted.subList(0, j);
-									next = Integer.MAX_VALUE;
-									break;
-								}
-								tempInsnIndexToCheckForAlignment = Math.max(tempInsnIndexToCheckForAlignment, j);
-							}
-						}
-					} catch (Throwable ignored) {
-						// TODO: Once this pass is finalized, we will actually ignore this.
-						//  - For now with the samples on-hand there are still some cases where they
-						//    seemingly have the wrong offsets on reinterpreted 'goto' instructions.
-						//  - These problems get ignored at runtime since they usually are within opaque-predicate
-						//    dead code which prevents the VM from freaking out.
-						logger.warn("Reinterpretation encountered an exception", ignored);
-					}
-
-					// Sanity check we have at least one reinterpreted instruction.
-					int reinrerpretedBlockSize = wrap(reinrerpreted).computeSize();
-					if (reinrerpreted.isEmpty()) {
-						logger.error("Reinterpretation block fill failure");
-						return;
-					}
-
-					// Modify the jump target to point to the end of the method (current code size in bytes).
-					// We will copy the patched block to the end of the method.
-					int reinterpretedBlockOffset = code.computeSize();
-					int newRelativeJumpOffset = reinterpretedBlockOffset - code.computeOffsetOf(jump);
-					jump.setOperand(newRelativeJumpOffset);
-
-					// TODO: Rewrite 'goto' as 'goto_w' when the distance between the original location
-					//  and the rewritten block location is too large.
-					//  - Ensure our handling of 'reinterpretedBlockOffset' allows for this
-					instructions.addAll(reinrerpreted);
-
-					// Sanity check
-					if (code.getInstructionAtOffset(newRelativeJumpOffset + currentOffset) != reinrerpreted.get(0)) {
-						logger.error("Reinterpretation block redirect failure");
-						return;
-					}
-
-					// Now that the reinterpreted code block has been copied to the end of the method,
-					// we need to fix any relative offsets in the block that are outside the bounds of the block
-					// to point back to where the reinterpreted code originates from.
-					//
-					//  1. Compute how many bytes into the reinterpreted instruction we are (mid-insn-shift)
-					//  2. Based on the current position, plus the mid-insn-shift so that we are "relative"
-					//     to the reinterpreted jump's base instruction offset,
-					//     compute difference from offset where reinterpreted block was added.
-					//  3. For any relative jump in the reinterpreted block that is not self-contained in the block
-					//     add the difference to each jump so that they are now relative to where they would have
-					//     been from the reinterpreted instruction.
-					shiftJumps(reinrerpreted,
-							// Filter: Only shift jumps that are outside the reinterpreted block boundaries
-							blockRelativeOffset -> blockRelativeOffset < 0 || blockRelativeOffset >= reinrerpretedBlockSize,
-							// Shift calculator: Add the block-shift to each affected jump
-							//  minus the bytes of preceding instructions in the block (since we are retargeting to jump backwards)
-							(jumpInsnOffset, jumpOperand) ->
-							{
-								// Compute where the jump originally was going to land in the context of it being
-								// evaluated from the reinterpreted instructions.
-								int originalJumpTarget = (absoluteJumpOffset + jumpInsnOffset + jumpOperand);
-								int thisJumpInsnOffset = reinterpretedBlockOffset + jumpInsnOffset;
-
-								// The new jump operand will be the difference between the current jump instruction
-								// offset and the original destination the jump at its original location would
-								// have landed at.
-								return (originalJumpTarget) - (thisJumpInsnOffset);
-							}
-					);
-
-					// Debug sanity checks
-					//  checkInvalidJumpUpTo(code, currentOffset);
-					//  checkInvalidJumpFrom(code, reinterpretedBlockOffset);
-
-					// Append trailing instructions to make sure we don't fall off the end of the method.
-					Instruction lastReinterpretedBlockInsn = reinrerpreted.get(reinrerpreted.size() - 1);
-					if (isTerminalOrAlwaysTakeFlowControl(lastReinterpretedBlockInsn)) {
-						// Execution naturally ends, no need to make changes
-					} else if (isBranch(lastReinterpretedBlockInsn)) {
-						// Handle fall-through cases of branches (these are likely bogus opaque-predicates, but just in case)
-						int currentCodeSize = code.computeSize();
-						int nextExpectedOffset = absoluteJumpOffset + reinrerpretedBlockSize;
-						int diff = nextExpectedOffset - currentCodeSize;
-						instructions.add(new IntOperandInstruction(GOTO_W, diff));
-					} else {
-						// Handle natural fall-through
-						int reinterpretedInstructionIndex = code.indexOf(instructionAtOffset);
-						int nextExpectedOffset = code.computeOffsetOf(instructions.get(reinterpretedInstructionIndex + 1));
-						int diff = nextExpectedOffset - code.computeSize();
-						instructions.add(new IntOperandInstruction(GOTO_W, diff));
-						// TODO: These two blocks are *very* similar and can probably be combined.
-						//  - Need more test cases to verify for certain
-					}
-				}
-			}
-		}
-
-		// It is possible to stack reinterpretation, so we will allow multiple passes.
-		if (checkInvalidJumpUpTo(code, Integer.MAX_VALUE) && passCount < reinterpretationPasses)
-			removeInstructionReinterpretation(code, passCount + 1);
+	protected void removeInstructionReinterpretation(@Nonnull CodeAttribute code) {
+		new FixInstructionReinterpretation(clazz, pool, code).doit();
 	}
 
 	/**

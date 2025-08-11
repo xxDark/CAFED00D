@@ -922,7 +922,7 @@ public class AttributeReader {
 
 		// Read instructions
 		InstructionReader insnReader = new InstructionReader(reader.getFallbackInstructionReader(builder));
-		List<Instruction> instructions = insnReader.read(is, cp, codeLength);
+		List<Instruction> instructions = insnReader.read(is, cp, codeLength, Integer.MAX_VALUE);
 
 		// Read exceptions
 		int numExceptions = is.readUnsignedShort();

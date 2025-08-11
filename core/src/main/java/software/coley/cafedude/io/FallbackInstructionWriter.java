@@ -22,7 +22,7 @@ public interface FallbackInstructionWriter {
 	 */
 	static FallbackInstructionWriter fail() {
 		return (opcode, buffer) -> {
-			throw new IllegalStateException("Unable to writer: " + opcode);
+			throw new IllegalStateException("Unable to write: " + opcode);
 		};
 	}
 }

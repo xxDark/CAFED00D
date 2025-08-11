@@ -148,6 +148,16 @@ public class GrowingByteBuffer {
 	}
 
 	/**
+	 * Updates buffer position.
+	 *
+	 * @param position
+	 *      New position.
+	 */
+	public void position(int position) {
+		buffer.position(position);
+	}
+
+	/**
 	 * @return Current position.
 	 */
 	public int position() {
