@@ -11,6 +11,8 @@ import software.coley.cafedude.classfile.instruction.CpRefInstruction;
 import software.coley.cafedude.classfile.instruction.IincInstruction;
 import software.coley.cafedude.classfile.instruction.Instruction;
 import software.coley.cafedude.classfile.instruction.IntOperandInstruction;
+import software.coley.cafedude.classfile.instruction.InvokeDynamicInstruction;
+import software.coley.cafedude.classfile.instruction.InvokeInterfaceInstruction;
 import software.coley.cafedude.classfile.instruction.LookupSwitchInstruction;
 import software.coley.cafedude.classfile.instruction.MultiANewArrayInstruction;
 import software.coley.cafedude.classfile.instruction.Opcodes;
@@ -326,19 +328,19 @@ public class InstructionReader {
 
 					// 1 byte for arg-count
 					// 1 padding byte
-					is.readShort();
+					int padding = is.readShort();
 
-					instructions.add(new CpRefInstruction(opcode, ref));
+					instructions.add(new InvokeInterfaceInstruction(ref, padding));
 					break;
 				}
 				case INVOKEDYNAMIC: {
 					int index = is.readUnsignedShort();
 
 					// 2 padding bytes
-					is.readShort();
+					int padding = is.readShort();
 
 					CpInvokeDynamic entry = (CpInvokeDynamic) pool.get(index);
-					instructions.add(new CpRefInstruction(INVOKEDYNAMIC, entry));
+					instructions.add(new InvokeDynamicInstruction(entry, padding));
 					break;
 				}
 				case NEW:

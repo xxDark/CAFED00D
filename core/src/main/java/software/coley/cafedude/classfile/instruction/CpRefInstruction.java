@@ -24,7 +24,7 @@ public non-sealed class CpRefInstruction extends Instruction implements CpAccess
 	 */
 	public CpRefInstruction(int opcode, @Nonnull CpEntry entry) {
 		super(opcode);
-		this.entry = entry;
+		this.entry = Objects.requireNonNull(entry);
 	}
 
 	/**

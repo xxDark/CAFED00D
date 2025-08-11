@@ -1,12 +1,13 @@
 package software.coley.cafedude.io;
 
 import jakarta.annotation.Nonnull;
-import software.coley.cafedude.classfile.Descriptor;
 import software.coley.cafedude.classfile.constant.ConstRef;
 import software.coley.cafedude.classfile.instruction.CpRefInstruction;
 import software.coley.cafedude.classfile.instruction.IincInstruction;
 import software.coley.cafedude.classfile.instruction.Instruction;
 import software.coley.cafedude.classfile.instruction.IntOperandInstruction;
+import software.coley.cafedude.classfile.instruction.InvokeDynamicInstruction;
+import software.coley.cafedude.classfile.instruction.InvokeInterfaceInstruction;
 import software.coley.cafedude.classfile.instruction.LookupSwitchInstruction;
 import software.coley.cafedude.classfile.instruction.MultiANewArrayInstruction;
 import software.coley.cafedude.classfile.instruction.TableSwitchInstruction;
@@ -263,14 +264,10 @@ public class InstructionWriter {
 				buffer.putShort(((CpRefInstruction) instruction).getEntry().getIndex() & 0xFFFF);
 				break;
 			case INVOKEINTERFACE: {
-				ConstRef ref = (ConstRef) ((CpRefInstruction) instruction).getEntry();
+				InvokeInterfaceInstruction insn = (InvokeInterfaceInstruction) instruction;
+				ConstRef ref = (ConstRef) insn.getEntry();
 				buffer.putShort(ref.getIndex() & 0xFFFF);
-
-				// InvokeInterface encodes the size of arguments.
-				// We add +1 because of the implicit 'this' argument.
-				int argSize = Descriptor.from(ref.getNameType().getType().getText()).getParameterSize() + 1;
-				buffer.put(argSize);
-				buffer.put(0);
+				buffer.putShort(insn.getPadding());
 				break;
 			}
 			case IINC: {
@@ -309,9 +306,9 @@ public class InstructionWriter {
 				}
 				break;
 			case INVOKEDYNAMIC:
-				CpRefInstruction ref = (CpRefInstruction) instruction;
+				InvokeDynamicInstruction ref = (InvokeDynamicInstruction) instruction;
 				buffer.putShort(ref.getEntry().getIndex() & 0xFFFF);
-				buffer.putShort(0);
+				buffer.putShort(ref.getPadding());
 				break;
 			case WIDE:
 				Instruction backing = ((WideInstruction) instruction).getBacking();

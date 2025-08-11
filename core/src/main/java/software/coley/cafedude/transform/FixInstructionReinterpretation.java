@@ -77,7 +77,10 @@ final class FixInstructionReinterpretation {
 			stream.moveTo(dst);
 			boolean patched = false;
 			try {
-				var reader = new InstructionReader();
+				var reader = new InstructionReader(new IllegalRewritingInstructionsReader(
+						pool,
+						file.getVersionMajor()
+				));
 				loop:
 				while (true) {
 					// Try to fill in as much as possible,
@@ -303,9 +306,10 @@ final class FixInstructionReinterpretation {
 			for (int j = pc + 1; j < i; j++) {
 				if (instructions.get(j) != null) {
 					var dst = createLabel(i);
-					var patch = new InstructionPatch();
-					patch.patches.add(insn);
-					patch.patches.add(new JumpStub(GOTO_W, dst));
+					var patch = new InstructionPatch(List.of(
+							insn,
+							new JumpStub(GOTO_W, dst)
+					));
 					instructions.set(pc, patch);
 					continue loop;
 				}
@@ -386,13 +390,13 @@ final class FixInstructionReinterpretation {
 				return 0;
 		}
 		var jumpNotTaken = new Label(-1);
-		var patch = new InstructionPatch();
-		var patches = patch.patches;
-		patches.add(new JumpStub(reverseOpcode(opcode), jumpNotTaken));
-		patches.add(new JumpStub(GOTO_W, jmp.label));
-		patches.add(jumpNotTaken);
+		var patch = new InstructionPatch(List.of(
+				new JumpStub(reverseOpcode(opcode), jumpNotTaken),
+				new JumpStub(GOTO_W, jmp.label),
+				jumpNotTaken
+		));
 		instructions.set(index, patch);
-		return patches.size();
+		return patch.patches.size();
 	}
 
 	private int fixControlFlow() {
