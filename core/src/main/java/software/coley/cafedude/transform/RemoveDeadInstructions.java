@@ -40,10 +40,11 @@ final class RemoveDeadInstructions {
 		var stream = new IndexableByteStream(rawCode);
 		stream.moveTo(pc);
 		do {
+			pc = stream.getIndex();
 			if (pc < 0 || pc >= rawCode.length) return;
 			if (visited.get(pc)) return;
 			var instruction = reader.read(stream, pool, 1).get(0);
-			visited.set(pc, pc = stream.getIndex());
+			visited.set(pc, stream.getIndex());
 			switch (instruction.getOpcode()) {
 				case IFEQ:
 				case IFNE:
@@ -109,8 +110,8 @@ final class RemoveDeadInstructions {
 	}
 
 	private void markDeadRegion(int from, int to) {
-		Arrays.fill(rawCode, from, to, (byte) NOP);
-		rawCode[--to] = (byte) ATHROW;
+		Arrays.fill(rawCode, from, --to, (byte) NOP);
+		rawCode[to] = (byte) ATHROW;
 		code.getExceptionTable().add(new CodeAttribute.ExceptionTableEntry(
 				from,
 				to,

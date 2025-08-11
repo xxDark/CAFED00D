@@ -83,7 +83,7 @@ public class CrasherPatchingTest {
 		List<File> files = new ArrayList<>();
 		File root = new File("src/test/resources/samples/obfuscated/crasher-asm");
 		for (File sub : Objects.requireNonNull(root.listFiles())) {
-			if (sub.getName().endsWith(".class") && noverify_code.contains(sub.getName()))
+			if (sub.getName().endsWith(".class"))
 				files.add(sub);
 		}
 		return files;
