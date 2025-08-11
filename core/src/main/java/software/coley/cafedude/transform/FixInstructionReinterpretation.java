@@ -63,13 +63,6 @@ final class FixInstructionReinterpretation {
 
 	private boolean reinterpret(int pc, int offset) {
 		int dst = pc + offset;
-		if (dst >= instructions.size()) {
-			var patch = new InstructionPatch();
-			patch.patches.add(new BasicInstruction(ACONST_NULL));
-			patch.patches.add(new BasicInstruction(ATHROW));
-			instructions.set(pc, patch);
-			return true;
-		}
 		if (instructions.get(dst) == null) {
 			byte[] bytes = writeCode();
 			var stream = new IndexableByteStream(bytes);
