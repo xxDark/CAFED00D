@@ -322,7 +322,6 @@ final class FixInstructionReinterpretation {
 	}
 
 	private void flushPatches(int patchesAdded) {
-		if (patchesAdded == 0) return;
 		var instructions = this.instructions;
 		var copy = new ArrayList<Instruction>(instructions.size() + patchesAdded);
 		for (var instruction : instructions) {
