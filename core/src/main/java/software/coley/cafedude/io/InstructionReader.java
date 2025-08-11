@@ -53,8 +53,6 @@ public class InstructionReader {
 	 * 		Constant pool to pull data from.
 	 * @param codeLength
 	 * 		Length of code attribute.
-	 * @param insnCount
-	 * 		Maximum allowed number of instructions to read.
 	 *
 	 * @return List of instructions.
 	 *
@@ -63,12 +61,12 @@ public class InstructionReader {
 	 */
 	@Nonnull
 	@SuppressWarnings("DuplicateBranchesInSwitch")
-	public List<Instruction> read(@Nonnull IndexableByteStream is, @Nonnull ConstPool pool, int codeLength, int insnCount) throws IOException {
+	public List<Instruction> read(@Nonnull IndexableByteStream is, @Nonnull ConstPool pool, int codeLength) throws IOException {
 		int start = is.getIndex();
 		int end = start + codeLength;
 		List<Instruction> instructions = new ArrayList<>();
 		FallbackInstructionReader fallbackReader = this.fallbackReader;
-		while (is.getIndex() < end && insnCount-- != 0) {
+		while (is.getIndex() < end) {
 			int opcode = is.readUnsignedByte();
 			switch (opcode) {
 				case NOP:

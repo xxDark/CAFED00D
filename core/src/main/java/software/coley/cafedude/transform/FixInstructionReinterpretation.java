@@ -9,6 +9,7 @@ import software.coley.cafedude.classfile.instruction.BasicInstruction;
 import software.coley.cafedude.classfile.instruction.Instruction;
 import software.coley.cafedude.classfile.instruction.IntOperandInstruction;
 import software.coley.cafedude.classfile.instruction.LookupSwitchInstruction;
+import software.coley.cafedude.classfile.instruction.Opcodes;
 import software.coley.cafedude.classfile.instruction.TableSwitchInstruction;
 import software.coley.cafedude.io.IndexableByteStream;
 import software.coley.cafedude.io.InstructionReader;
@@ -72,12 +73,41 @@ final class FixInstructionReinterpretation {
 		if (instructions.get(dst) == null) {
 			byte[] bytes = writeCode();
 			var stream = new IndexableByteStream(bytes);
-			stream.moveTo(pc);
-			List<Instruction> instructions = List.of();
+			stream.moveTo(dst);
+			boolean patched = false;
 			try {
-				instructions = new InstructionReader().read(stream, pool, bytes.length - pc, 1);
-				if (instructions.isEmpty()) {
-					throw new IllegalStateException("Must read one instruction");
+				var reader = new InstructionReader();
+				loop:
+				while (true) {
+					// Try to fill in as much as possible,
+					// until we hit either no control flow instruction or we
+					// see another existing instruction.
+					int current = stream.getIndex();
+					if (current >= instructions.size() || instructions.get(current) != null)
+						break;
+					var list = reader.read(stream, pool, 1);
+					if (list.isEmpty())
+						break;
+					if (list.size() != 1)
+						throw new IllegalStateException("Must read exactly one instruction");
+					var tmp = list.get(0);
+					instructions.set(current, tmp);
+					patched = true;
+					switch (tmp.getOpcode()) {
+						case JSR:
+						case JSR_W:
+						case GOTO:
+						case GOTO_W:
+						case LOOKUPSWITCH:
+						case TABLESWITCH:
+						case IRETURN:
+						case LRETURN:
+						case DRETURN:
+						case ARETURN:
+						case RETURN:
+						case ATHROW:
+							break loop;
+					}
 				}
 			} catch (Throwable t) {
 				// TODO: Once this pass is finalized, we will actually ignore this.
@@ -87,9 +117,7 @@ final class FixInstructionReinterpretation {
 				//    dead code which prevents the VM from freaking out.
 				logger.warn("Reinterpretation encountered an exception", t);
 			}
-			if (instructions.isEmpty()) return false;
-			this.instructions.set(dst, instructions.get(0));
-			return true;
+			return patched;
 		}
 		return false;
 	}
@@ -170,14 +198,14 @@ final class FixInstructionReinterpretation {
 	private void rewrite() {
 		labels = new Label[instructions.size()];
 		var instructions = this.instructions;
-		for (int i = 0; i < instructions.size(); i++) {
-			var insn = instructions.get(i);
+		for (int pc = 0; pc < instructions.size(); pc++) {
+			var insn = instructions.get(pc);
 			if (insn == null) continue;
 			var replacement = insn;
 			switch (insn.getOpcode()) {
 				case LOOKUPSWITCH: {
 					var lsw = (LookupSwitchInstruction) insn;
-					int thisPc = i;
+					int thisPc = pc;
 					replacement = new LookupSwitchStub(
 							lsw.getPadding(),
 							lsw.getKeys(),
@@ -188,7 +216,7 @@ final class FixInstructionReinterpretation {
 				}
 				case TABLESWITCH: {
 					var tsw = (TableSwitchInstruction) insn;
-					int thisPc = i;
+					int thisPc = pc;
 					replacement = new TableSwitchStub(
 							tsw.getPadding(),
 							tsw.getLow(),
@@ -218,9 +246,9 @@ final class FixInstructionReinterpretation {
 				case JSR:
 				case GOTO_W:
 				case JSR_W:
-					replacement = new JumpInstruction(insn.getOpcode(), createLabel(i, ((IntOperandInstruction) insn).getOperand()));
+					replacement = new JumpInstruction(insn.getOpcode(), createLabel(pc, ((IntOperandInstruction) insn).getOperand()));
 			}
-			instructions.set(i, replacement);
+			instructions.set(pc, replacement);
 		}
 		var origTable = code.getExceptionTable();
 		exceptionTableEntries = new ArrayList<>(origTable.size());
@@ -251,6 +279,7 @@ final class FixInstructionReinterpretation {
 	private void zap() {
 		// TODO link all instructions in a linked list,
 		// and filter out dead code.
+		instructions.removeIf(instruction -> instruction.getOpcode() == NOP);
 	}
 
 	private int patchControlFlow(int pc, int index, JumpInstruction jmp) {
@@ -415,8 +444,7 @@ final class FixInstructionReinterpretation {
 			code.setInstructions(new InstructionReader().read(
 					stream,
 					pool,
-					buffer.position(),
-					instructions.size()
+					buffer.position()
 			));
 		} catch (Exception e) {
 			throw new IllegalStateException("Error writing instructions", e);

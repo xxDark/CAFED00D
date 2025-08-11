@@ -18,6 +18,7 @@ import software.coley.cafedude.transform.IllegalStrippingTransformer;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
@@ -60,6 +61,9 @@ public class CrasherPatchingTest {
 				ClassNode node = new ClassNode(Opcodes.ASM9);
 				cr.accept(node, 0);
 				node.accept(cw);
+				if (sub.getName().contains("sample48.clas")) {
+					Files.write(Path.of("F:\\Test.class"), modified);
+				}
 			}, "Failure to patch class: " + sub.getName());
 		} catch (IOException e) {
 			fail("Failed to read class, IO error", e);

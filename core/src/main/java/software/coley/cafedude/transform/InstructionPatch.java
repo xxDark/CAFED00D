@@ -7,9 +7,14 @@ import java.util.ArrayList;
 import java.util.List;
 
 final class InstructionPatch extends BasicInstruction {
-	final List<Instruction> patches = new ArrayList<>(4);
+	final List<Instruction> patches;
 
-	 InstructionPatch() {
+	InstructionPatch(List<Instruction> patches) {
 		super(-1);
+		this.patches = patches;
+	}
+
+	InstructionPatch() {
+		this(new ArrayList<>());
 	}
 }
