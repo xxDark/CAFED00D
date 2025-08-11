@@ -394,16 +394,25 @@ final class FixInstructionReinterpretation {
 			writer.write(buffer, instruction);
 		}
 
+		var bb = buffer.unwrap();
 		for (var fixup : fixups) {
 			int oldPos = buffer.position();
 			buffer.position(fixup.at);
-			buffer.putInt(fixup.target.pc - fixup.pc);
+			int offset = fixup.target.pc - fixup.pc;
+			switch ((bb.get(fixup.pc) & 0xFF)) {
+				case GOTO_W:
+				case JSR_W:
+				case LOOKUPSWITCH:
+				case TABLESWITCH:
+					buffer.putInt(offset);
+					break;
+				default:
+					buffer.putShort(offset);
+			}
 			buffer.position(oldPos);
 		}
-		var bb = buffer.unwrap();
 		var stream = new IndexableByteStream(bb.array());
 		try {
-			code.setInstructions(instructions);
 			code.setInstructions(new InstructionReader().read(
 					stream,
 					pool,
