@@ -123,9 +123,9 @@ public class IllegalStrippingTransformer extends Transformer implements Constant
 			method.getAttributes().removeIf(attribute -> !isValidWrapped(method, attribute));
 			CodeAttribute code = method.getAttribute(CodeAttribute.class);
 			if (code != null) {
+				removeInstructionReinterpretation(code);
 				removeInvalidInstructions(code);
 				removeInvalidVariables(code);
-				removeInstructionReinterpretation(code);
 				//removeDeadInstructions(code);
 				collectDynamicCpReferences(code, dynamicCpReferences);
 			}
@@ -147,62 +147,10 @@ public class IllegalStrippingTransformer extends Transformer implements Constant
 	 * 		Code to visit.
 	 */
 	protected void removeDeadInstructions(@Nonnull CodeAttribute code) {
-		// Compute which instructions are visited by walking the method's control flow.
-		Set<Instruction> visited = Collections.newSetFromMap(new IdentityHashMap<>());
-
-		// Visit from the start + try-catch handler blocks
-		Queue<Integer> offsetsToVisit = new ArrayDeque<>();
-		offsetsToVisit.add(0);
-		for (ExceptionTableEntry e : code.getExceptionTable())
-			offsetsToVisit.add(e.getHandlerPc());
-
-		// Visit flow
-		List<Instruction> instructions = code.getInstructions();
-		int instructionCount = instructions.size();
-		while (!offsetsToVisit.isEmpty()) {
-			int offset = offsetsToVisit.remove();
-			Instruction instruction = code.getInstructionAtOffset(offset);
-			if (instruction == null)
-				continue;
-			int insnIndex = code.indexOf(instruction);
-			if (insnIndex < 0)
-				continue;
-			for (int i = insnIndex; i < instructionCount; i++) {
-				instruction = instructions.get(i);
-				if (!visited.add(instruction))
-					break;
-
-				// Add new offsets for control flow branches.
-				if (isBranch(instruction) && instruction instanceof IntOperandInstruction jump) {
-					int base = code.computeOffsetOf(jump);
-					offsetsToVisit.add(base + jump.getOperand());
-				} else if (instruction instanceof TableSwitchInstruction table) {
-					int base = code.computeOffsetOf(table);
-					offsetsToVisit.add(base + table.getDefault());
-					table.getOffsets().forEach(off -> offsetsToVisit.add(base + off));
-				} else if (instruction instanceof LookupSwitchInstruction lookup) {
-					int base = code.computeOffsetOf(lookup);
-					offsetsToVisit.add(base + lookup.getDefault());
-					lookup.getOffsets().forEach(off -> offsetsToVisit.add(base + off));
-				}
-
-				// Abort sequential stepping if this instruction is terminal or always-take branching.
-				if (isTerminalOrAlwaysTakeFlowControl(instruction))
-					break;
-			}
-		}
-
-		// Replace any unvisited instructions with NOP
-		BasicInstruction nop = new BasicInstruction(NOP);
-		for (int i = instructions.size() - 1; i >= 0; i--) {
-			Instruction instruction = instructions.get(i);
-			if (!visited.contains(instruction)) {
-				int extraNops = instruction.computeSize() - 1;
-				instructions.set(i, nop);
-				for (int j = 0; j < extraNops; j++) {
-					instructions.add(i, nop);
-				}
-			}
+		try {
+			new RemoveDeadInstructions(clazz, pool, code).doit();
+		} catch (Throwable t) {
+			logger.warn("Error patching dead instructions", t);
 		}
 	}
 
@@ -252,7 +200,7 @@ public class IllegalStrippingTransformer extends Transformer implements Constant
 			int op = instruction.getOpcode();
 
 			// Jumps that go out of bounds of the method
-			if (isBranch(instruction) && instruction instanceof IntOperandInstruction jump) {
+			if (isBranch(instruction) && instruction instanceof IntOperandInstruction jump && false) {
 				int jumpOffset = code.computeOffsetOf(jump) + jump.getOperand();
 				if (jumpOffset > maxPc || jumpOffset < 0) {
 					int size = instruction.computeSize();
@@ -260,7 +208,7 @@ public class IllegalStrippingTransformer extends Transformer implements Constant
 					for (int j = 0; j < size - 1; j++)
 						instructions.add(i, new BasicInstruction(NOP));
 				}
-			} else if (instruction instanceof TableSwitchInstruction tswitch) {
+			} else if (instruction instanceof TableSwitchInstruction tswitch && false) {
 				int switchOffset = code.computeOffsetOf(tswitch);
 				if (switchOffset + tswitch.getDefault() > maxPc
 						|| switchOffset + tswitch.getDefault() < 0
@@ -271,7 +219,7 @@ public class IllegalStrippingTransformer extends Transformer implements Constant
 					for (int j = 0; j < size - 1; j++)
 						instructions.add(i, new BasicInstruction(NOP));
 				}
-			} else if (instruction instanceof LookupSwitchInstruction lswitch) {
+			} else if (instruction instanceof LookupSwitchInstruction lswitch && false) {
 				int switchOffset = code.computeOffsetOf(lswitch);
 				if (switchOffset + lswitch.getDefault() > maxPc
 						|| switchOffset + lswitch.getDefault() < 0

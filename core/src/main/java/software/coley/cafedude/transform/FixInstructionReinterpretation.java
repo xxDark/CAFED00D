@@ -9,7 +9,6 @@ import software.coley.cafedude.classfile.instruction.BasicInstruction;
 import software.coley.cafedude.classfile.instruction.Instruction;
 import software.coley.cafedude.classfile.instruction.IntOperandInstruction;
 import software.coley.cafedude.classfile.instruction.LookupSwitchInstruction;
-import software.coley.cafedude.classfile.instruction.Opcodes;
 import software.coley.cafedude.classfile.instruction.TableSwitchInstruction;
 import software.coley.cafedude.io.IndexableByteStream;
 import software.coley.cafedude.io.InstructionReader;
@@ -18,16 +17,23 @@ import software.coley.cafedude.util.GrowingByteBuffer;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.BitSet;
 import java.util.Collections;
 import java.util.List;
+import java.util.Objects;
 
 import static software.coley.cafedude.classfile.instruction.Opcodes.*;
 
 final class FixInstructionReinterpretation {
+	private static final int INVALID_PC = Integer.MIN_VALUE;
+	private static final int PATCHED_PC = Integer.MAX_VALUE;
+	private static final int PATCH_CANARY = 0xcccc;
+	private static final int PATCH_CANARY_W = 0xcccccccc;
 	private static final Logger logger = LoggerFactory.getLogger(FixInstructionReinterpretation.class);
 	final ClassFile file;
 	final ConstPool pool;
 	final CodeAttribute code;
+	final BitSet real = new BitSet();
 	List<Instruction> instructions;
 	List<ExceptionTableEntryStub> exceptionTableEntries;
 	Label[] labels;
@@ -56,6 +62,7 @@ final class FixInstructionReinterpretation {
 	private void assign() {
 		int offset = 0;
 		for (var instruction : code.getInstructions()) {
+			real.set(offset);
 			instructions.set(offset, instruction);
 			offset += instruction.computeSize();
 		}
@@ -63,6 +70,7 @@ final class FixInstructionReinterpretation {
 
 	private boolean reinterpret(int pc, int offset) {
 		int dst = pc + offset;
+		if (dst >= instructions.size()) return false;
 		if (instructions.get(dst) == null) {
 			byte[] bytes = writeCode();
 			var stream = new IndexableByteStream(bytes);
@@ -76,17 +84,25 @@ final class FixInstructionReinterpretation {
 					// until we hit either no control flow instruction or we
 					// see another existing instruction.
 					int current = stream.getIndex();
-					if (current >= instructions.size() || instructions.get(current) != null)
+					if (current >= instructions.size())
 						break;
-					var list = reader.read(stream, pool, 1);
-					if (list.isEmpty())
+					Instruction instruction;
+					try {
+						instruction = reader.read(stream, pool, 1).get(0);
+					} catch (Exception ex) {
+						logger.warn("Error reading instruction", ex);
+						return patched;
+					}
+					var previous = instructions.set(current, instruction);
+					if (previous != null) {
+						if (previous.getOpcode() != instruction.getOpcode()) {
+							throw new IllegalStateException("Accidental instruction overwrite");
+						}
 						break;
-					if (list.size() != 1)
-						throw new IllegalStateException("Must read exactly one instruction");
-					var tmp = list.get(0);
-					instructions.set(current, tmp);
+					}
+					real.set(current);
 					patched = true;
-					switch (tmp.getOpcode()) {
+					switch (instruction.getOpcode()) {
 						case JSR:
 						case JSR_W:
 						case GOTO:
@@ -99,6 +115,7 @@ final class FixInstructionReinterpretation {
 						case ARETURN:
 						case RETURN:
 						case ATHROW:
+						case RET:
 							break loop;
 					}
 				}
@@ -158,24 +175,35 @@ final class FixInstructionReinterpretation {
 		return false;
 	}
 
-	private boolean reinterpret() {
+	private boolean reinterpret(int pc) {
 		boolean seen = false;
 		var instructions = this.instructions;
 		boolean hasWork;
 		do {
 			hasWork = false;
-			for (int i = 0; i < instructions.size(); i++) {
-				var insn = instructions.get(i);
+			for (; pc < instructions.size(); pc++) {
+				var insn = instructions.get(pc);
 				if (insn == null) continue;
-				hasWork |= reinterpret(i, insn);
+				hasWork |= reinterpret(pc, insn);
 			}
 			seen |= hasWork;
 		} while (hasWork);
 		return seen;
 	}
 
+	private boolean reinterpret() {
+		var ok = reinterpret(0);
+		for (var entry : code.getExceptionTable()) {
+			ok |= reinterpret(entry.getHandlerPc(), 0);
+		}
+		return ok;
+	}
+
 	private Label createLabel(int pc) {
 		Label[] labels = this.labels;
+		if (pc < 0 || pc >= labels.length) {
+			return new Label(INVALID_PC);
+		}
 		Label lbl;
 		if ((lbl = labels[pc]) == null) {
 			labels[pc] = lbl = new Label(pc);
@@ -239,20 +267,51 @@ final class FixInstructionReinterpretation {
 				case JSR:
 				case GOTO_W:
 				case JSR_W:
-					replacement = new JumpInstruction(insn.getOpcode(), createLabel(pc, ((IntOperandInstruction) insn).getOperand()));
+					replacement = new JumpStub(insn.getOpcode(), createLabel(pc, ((IntOperandInstruction) insn).getOperand()));
 			}
 			instructions.set(pc, replacement);
 		}
-		var origTable = code.getExceptionTable();
-		exceptionTableEntries = new ArrayList<>(origTable.size());
-		for (var exceptionTableEntry : origTable) {
-			exceptionTableEntries.add(new ExceptionTableEntryStub(
-					createLabel(exceptionTableEntry.getStartPc()),
-					createLabel(exceptionTableEntry.getEndPc()),
-					createLabel(exceptionTableEntry.getHandlerPc()),
-					exceptionTableEntry.getCatchType()
-			));
+		{
+			var origTable = code.getExceptionTable();
+			exceptionTableEntries = new ArrayList<>(origTable.size());
+			for (var exceptionTableEntry : origTable) {
+				exceptionTableEntries.add(new ExceptionTableEntryStub(
+						createLabel(exceptionTableEntry.getStartPc()),
+						createLabel(exceptionTableEntry.getEndPc()),
+						createLabel(exceptionTableEntry.getHandlerPc()),
+						exceptionTableEntry.getCatchType()
+				));
+			}
 		}
+		// Jump over newly inserted code:
+		// iconst_5
+		// [reinterpreted]
+		// pop
+		// |
+		// V
+		// iconst_5
+		// goto_w continue
+		// [rienterpreted]
+		// continue:
+		// pop
+		loop:
+		for (int i = real.nextSetBit(0);;) {
+			int pc = i;
+			i = real.nextSetBit(i + 1);
+			if (i == -1) break;
+			var insn = Objects.requireNonNull(instructions.get(pc));
+			for (int j = pc + 1; j < i; j++) {
+				if (instructions.get(j) != null) {
+					var dst = createLabel(i);
+					var patch = new InstructionPatch();
+					patch.patches.add(insn);
+					patch.patches.add(new JumpStub(GOTO_W, dst));
+					instructions.set(pc, patch);
+					continue loop;
+				}
+			}
+		}
+		// Form new list without gaps.
 		var newList = new ArrayList<Instruction>(instructions.size());
 		for (int i = 0; i < instructions.size(); i++) {
 			var instruction = instructions.get(i);
@@ -269,13 +328,43 @@ final class FixInstructionReinterpretation {
 		labels = null; // Not needed.
 	}
 
-	private void zap() {
-		// TODO link all instructions in a linked list,
-		// and filter out dead code.
-		instructions.removeIf(instruction -> instruction.getOpcode() == NOP);
+	private void fixJump(Label label) {
+		if (label.pc != INVALID_PC) return;
+		label.pc = PATCHED_PC;
+		instructions.add(label);
+		instructions.add(new BasicInstruction(ACONST_NULL));
+		instructions.add(new BasicInstruction(ATHROW));
 	}
 
-	private int patchControlFlow(int pc, int index, JumpInstruction jmp) {
+	private void zap() {
+		// Filter out dead code.
+		instructions.removeIf(instruction -> instruction.getOpcode() == NOP);
+		// Point dead targets to ACONST_NULL + ATHROW.
+		for (int i = instructions.size(); i != 0; ) {
+			var insn = instructions.get(--i);
+			if (insn instanceof JumpStub) {
+				fixJump(((JumpStub) insn).label);
+				continue;
+			}
+			if (insn instanceof LookupSwitchStub) {
+				var lsw = (LookupSwitchStub) insn;
+				fixJump(lsw.dflt);
+				for (var lbl : lsw.cases) {
+					fixJump(lbl);
+				}
+				continue;
+			}
+			if (insn instanceof TableSwitchStub) {
+				var tsw = (TableSwitchStub) insn;
+				fixJump(tsw.dflt);
+				for (var lbl : tsw.cases) {
+					fixJump(lbl);
+				}
+			}
+		}
+	}
+
+	private int patchControlFlow(int pc, int index, JumpStub jmp) {
 		int opcode = jmp.getOpcode();
 		switch (opcode) {
 			case GOTO_W:
@@ -284,30 +373,23 @@ final class FixInstructionReinterpretation {
 		}
 		final int EXTRA_DISTANCE = 8;
 		int dst = jmp.label.pc;
-		int distance = dst - pc;
-		if (distance > 0) {
-			// if distance > 0, it means we jump forward, add extra bytes.
-			distance += EXTRA_DISTANCE;
-		} else if (distance < 0) {
-			// if distance > 0, it means we jump backwards, subtract extra bytes.
-			distance -= EXTRA_DISTANCE;
-		}
-		if (Math.abs(distance) <= 32767) {
+		int distance = Math.abs(dst - pc) + EXTRA_DISTANCE;
+		if (distance <= 32767) {
 			return 0;
 		}
 		switch (opcode) {
 			case GOTO:
-				instructions.set(index, new JumpInstruction(GOTO_W, jmp.label));
+				instructions.set(index, new JumpStub(GOTO_W, jmp.label));
 				return 0;
 			case JSR:
-				instructions.set(index, new JumpInstruction(JSR_W, jmp.label));
+				instructions.set(index, new JumpStub(JSR_W, jmp.label));
 				return 0;
 		}
 		var jumpNotTaken = new Label(-1);
 		var patch = new InstructionPatch();
 		var patches = patch.patches;
-		patches.add(new JumpInstruction(reverseOpcode(opcode), jumpNotTaken));
-		patches.add(new JumpInstruction(GOTO_W, jmp.label));
+		patches.add(new JumpStub(reverseOpcode(opcode), jumpNotTaken));
+		patches.add(new JumpStub(GOTO_W, jmp.label));
 		patches.add(jumpNotTaken);
 		instructions.set(index, patch);
 		return patches.size();
@@ -331,12 +413,13 @@ final class FixInstructionReinterpretation {
 				worstCasePc += worstCaseSize(instruction);
 			}
 		}
+		// Patch jumps with 16-bit offsets.
 		int patchesAdded = 0;
 		int pc = 0;
 		for (int i = 0; i < instructions.size(); i++) {
 			var insn = instructions.get(i);
-			if (insn instanceof JumpInstruction) {
-				patchesAdded += patchControlFlow(pc, i, (JumpInstruction) insn);
+			if (insn instanceof JumpStub) {
+				patchesAdded += patchControlFlow(pc, i, (JumpStub) insn);
 			}
 			pc += worstCaseSize(insn);
 		}
@@ -359,7 +442,7 @@ final class FixInstructionReinterpretation {
 	private void flushBytes() {
 		record Fixup(int pc, int at, Label target) {
 
-			Fixup(int pc, JumpInstruction jmp) {
+			Fixup(int pc, JumpStub jmp) {
 				this(pc, pc + 1, jmp.label);
 			}
 		}
@@ -371,9 +454,10 @@ final class FixInstructionReinterpretation {
 			if (instruction instanceof Label) {
 				((Label) instruction).pc = startPos;
 				continue;
-			} else if (instruction instanceof JumpInstruction) {
-				fixups.add(new Fixup(startPos, (JumpInstruction) instruction));
-				instruction = new IntOperandInstruction(instruction.getOpcode(), -1);
+			} else if (instruction instanceof JumpStub) {
+				fixups.add(new Fixup(startPos, (JumpStub) instruction));
+				int opcode = instruction.getOpcode();
+				instruction = new IntOperandInstruction(opcode, opcode == GOTO_W || opcode == JSR_W ? PATCH_CANARY_W : PATCH_CANARY);
 			} else if (instruction instanceof LookupSwitchStub) {
 				var lsw = (LookupSwitchStub) instruction;
 				int pc = startPos + 1;
@@ -386,9 +470,9 @@ final class FixInstructionReinterpretation {
 					fixups.add(new Fixup(startPos, pc, dst));
 					pc += 4; // skip dst
 				}
-				var dummy = Collections.nCopies(lsw.cases.size(), -1);
+				var dummy = Collections.nCopies(lsw.cases.size(), PATCH_CANARY_W);
 				instruction = new LookupSwitchInstruction(
-						-1,
+						PATCH_CANARY_W,
 						dummy,
 						dummy
 				);
@@ -404,9 +488,9 @@ final class FixInstructionReinterpretation {
 					fixups.add(new Fixup(startPos, pc, dst));
 					pc += 4; // skip dst
 				}
-				var dummy = Collections.nCopies(tsw.cases.size(), -1);
+				var dummy = Collections.nCopies(tsw.cases.size(), PATCH_CANARY_W);
 				instruction = new TableSwitchInstruction(
-						-1,
+						PATCH_CANARY_W,
 						tsw.low,
 						tsw.high,
 						dummy
@@ -425,10 +509,19 @@ final class FixInstructionReinterpretation {
 				case JSR_W:
 				case LOOKUPSWITCH:
 				case TABLESWITCH:
-					buffer.putInt(offset);
+					if (bb.getInt(fixup.at) != PATCH_CANARY_W) {
+						throw new IllegalStateException("Wrong patching location");
+					}
+					bb.putInt(fixup.at, offset);
 					break;
 				default:
-					buffer.putShort(offset);
+					if (offset < Short.MIN_VALUE || offset > Short.MAX_VALUE) {
+						throw new IllegalStateException("fixControlFlow failed");
+					}
+					if ((bb.getShort(fixup.at) & 0xFFFF) != PATCH_CANARY) {
+						throw new IllegalStateException("Wrong patching location");
+					}
+					bb.putShort(fixup.at, (short) offset);
 			}
 			buffer.position(oldPos);
 		}
@@ -452,6 +545,15 @@ final class FixInstructionReinterpretation {
 			orig.setStartPc(patched.start.pc);
 			orig.setEndPc(patched.end.pc);
 			orig.setHandlerPc(patched.handler.pc);
+		}
+		for (int i = exceptionTable.size(); i < exceptionTableEntries.size(); i++) {
+			var patched = exceptionTableEntries.get(i);
+			exceptionTable.add(new CodeAttribute.ExceptionTableEntry(
+					patched.start.pc,
+					patched.end.pc,
+					patched.handler.pc,
+					patched.catchType
+			));
 		}
 	}
 

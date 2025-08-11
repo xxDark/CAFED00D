@@ -928,9 +928,7 @@ public class AttributeReader {
 		int numExceptions = is.readUnsignedShort();
 		List<ExceptionTableEntry> exceptions = new ArrayList<>(numExceptions);
 		for (int i = 0; i < numExceptions; i++) {
-			ExceptionTableEntry entry = readCodeException(codeLength);
-			if (entry != null)
-				exceptions.add(entry);
+			exceptions.add(readCodeException());
 		}
 
 		// Read attributes
@@ -946,28 +944,17 @@ public class AttributeReader {
 	}
 
 	/**
-	 * @param codeLength
-	 * 		Code length, used to validate the exception table entry offsets.
-	 *
 	 * @return Exception table entry for code attribute. {@code null} if the entry contained junk.
 	 *
 	 * @throws IOException
 	 * 		When the stream is unexpectedly closed or ends.
 	 */
-	@Nullable
-	private CodeAttribute.ExceptionTableEntry readCodeException(int codeLength) throws IOException {
+	@Nonnull
+	private CodeAttribute.ExceptionTableEntry readCodeException() throws IOException {
 		int startPc = is.readUnsignedShort();
 		int endPc = is.readUnsignedShort();
 		int handlerPc = is.readUnsignedShort();
 		int catchTypeCpIndex = is.readUnsignedShort();
-
-		// Out of bounds check
-		if (startPc >= codeLength || endPc > codeLength || handlerPc > codeLength)
-			return null;
-
-		// Zero-length entries can be tossed
-		if (startPc == endPc)
-			return null;
 
 		CpClass exceptionType = orNullInCp(CpClass.class, catchTypeCpIndex);
 		return new CodeAttribute.ExceptionTableEntry(

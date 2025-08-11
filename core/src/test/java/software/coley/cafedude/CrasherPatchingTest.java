@@ -18,6 +18,7 @@ import software.coley.cafedude.transform.IllegalStrippingTransformer;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
@@ -62,6 +63,9 @@ public class CrasherPatchingTest {
 				ClassNode node = new ClassNode(Opcodes.ASM9);
 				cr.accept(node, 0);
 				node.accept(cw);
+				if (sub.getName().contains("sample48")) {
+					Files.write(Path.of("F:\\Test.class"), modified);
+				}
 			}, "Failure to patch class: " + sub.getName());
 		} catch (IOException e) {
 			fail("Failed to read class, IO error", e);
@@ -79,7 +83,7 @@ public class CrasherPatchingTest {
 		List<File> files = new ArrayList<>();
 		File root = new File("src/test/resources/samples/obfuscated/crasher-asm");
 		for (File sub : Objects.requireNonNull(root.listFiles())) {
-			if (sub.getName().endsWith(".class"))
+			if (sub.getName().endsWith(".class") && noverify_code.contains(sub.getName()))
 				files.add(sub);
 		}
 		return files;

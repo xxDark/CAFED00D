@@ -3,10 +3,10 @@ package software.coley.cafedude.transform;
 import software.coley.cafedude.classfile.instruction.BasicInstruction;
 import software.coley.cafedude.classfile.instruction.Opcodes;
 
-final class JumpInstruction extends BasicInstruction {
-	final Label label;
+final class JumpStub extends BasicInstruction {
+	Label label;
 
-	JumpInstruction(int opcode, Label label) {
+	JumpStub(int opcode, Label label) {
 		super(opcode);
 		this.label = label;
 	}

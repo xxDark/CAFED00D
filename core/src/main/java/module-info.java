@@ -1,6 +1,7 @@
 module cafedude.core {
 	requires static jakarta.annotation;
 	requires transitive org.slf4j;
+	requires java.management;
 
 	opens software.coley.cafedude;
 	opens software.coley.cafedude.classfile;

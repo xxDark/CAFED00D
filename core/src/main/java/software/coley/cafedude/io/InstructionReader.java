@@ -284,7 +284,7 @@ public class InstructionReader {
 				case TABLESWITCH: {
 					int pos = is.getIndex();
 					// Skip padding.
-					is.skip((4 - pos & 3));
+					is.skipNBytes((4 - pos & 3));
 					int dflt = is.readInt();
 					int low = is.readInt();
 					int high = is.readInt();
@@ -474,7 +474,7 @@ public class InstructionReader {
 	public static LookupSwitchInstruction readLookupSwitchInstruction(@Nonnull IndexableByteStream is) throws IOException {
 		int pos = is.getIndex();
 		// Skip padding.
-		is.skip((4 - pos & 3));
+		is.skipNBytes((4 - pos & 3));
 		int dflt = is.readInt();
 		int keyCount = is.readInt();
 		List<Integer> keys = new ArrayList<>(keyCount);
